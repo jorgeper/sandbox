@@ -1,56 +1,52 @@
 #!/usr/bin/env python3
 """
-media_organizer-fable.py  --  deterministic media (photo/video/audio) organizer.  v6 "fable"
+media_organizer-v3.py  --  deterministic media (photo/video/audio) organizer.  v3
 
-Drop-in successor to media_organizer.py. Same flow (scan -> date -> plan -> review -> execute
--> resume-safe), with these fixes/improvements over v5:
+Successor to media_organizer-fable.py. Same flow (scan -> date -> plan -> review -> execute
+-> resume-safe), same output format, ONE big routing change:
 
-  - execute survives per-file copy errors: a locked/vanished/unreadable file is logged FAILED
-    in copied.log and the run continues (v5 crashed and could never finish past it)
-  - name-collision suffixes are re-checked, so two files can no longer be planned onto the
-    same destination path (v5 could silently overwrite one with the other)
-  - verify report now lists MISSING source files with their paths (v5 said "see report" but
-    never wrote them)
-  - empty slugs fall back to the numbered scheme: fully non-Latin names no longer become
-    "2020-05-08-.jpg"; accents are transliterated (cumpleaños -> cumpleanos)
-  - event folders only claim files within --event-span-days (default 31) of the folder's
-    typical date; far-off strays (wrong-year files) are placed in their own year/month
-    (v5 parked the whole folder under the EARLIEST date, mixing years)
-  - incremental skip: library.md5 now records hash<TAB>destination, so re-runs recognize
-    content even when numbered filenames shift (old plain-hash manifests still read fine)
-  - execute prints ONE line per file (source -> destination), with a short reason on any
-    file that is not placed into the timeline (e.g. "untouched: nested >1 folder deep")
-  - PIL images are closed after EXIF read (no fd leak); HEIC/HEIF EXIF works when pillow-heif
-    is installed; png/webp EXIF attempted; ffprobe check is lazy (not at import)
-  - guards against source/destination overlap
-  - --min-year (default 1995) replaces the hard-coded plausibility floor
-  - Google Takeout ".supplemental-metadata.json" sidecars; timezone-safe timestamp parsing
-  - phone-shot photos/videos get a ".phone" token before the extension
-    (2023-07-04-beach.phone.jpg) so Explorer search for ".phone." shows phone-only files;
-    disable with --no-phone-tag. Detection: EXIF / QuickTime Make+Model, HEIC extension,
-    and phone filename patterns (PXL_, WhatsApp, screenshots).
-  - phone junk (screenshots, WhatsApp/messaging saves) is quarantined to
-    _phone-misc/YYYY/MM - Month/ -- dated and renamed like the timeline, but out of it;
-    junk never anchors an event's date. Disable with --no-junk-quarantine.
+  THERE IS NO "untouched/<nested>" ROUTE ANY MORE. Every dated media file, however deep it
+  was in the source, lands in the year/month tree:
 
-ROUTING adds one branch vs v5: junk-named media with a date -> _phone-misc/YYYY/MM - Month/,
-without a date -> _phone-misc/<original path>. Everything else routes as before.
+    - no event-looking folder anywhere on its source path  -> YYYY/MM - Month/<dated name>
+    - an ancestor folder looks like an EVENT ("Madrid Marathon", "Karen Hawaii", ...)
+        -> YYYY/MM - Month/<event-date>-<event-slug>/<dated name>
+      and any folder structure BELOW the event folder in the source is preserved:
+        Madrid Marathon/day2/raw/IMG.jpg -> 2019/04 - April/2019-04-27-madrid-marathon/day2/raw/2019-04-28-....jpg
+    - every copied media file gets the YYYY-MM-DD- prefixed name, at any depth.
+
+  What counts as an EVENT folder (heuristic, see is_event_name):
+    - has at least one real word ("madrid marathon", "cumpleaños Ana", "Spain 2019")
+    - after stripping leading/trailing numbering and dates ("00_exports" -> "exports",
+      "2019-06 Madrid" -> "madrid")
+    - that isn't just a container/junk word: exports, raw, edited, originals, camera roll,
+      dcim, photos, day2, misc, backup, trips, downloads, 100CANON-style camera folders, ...
+  The SHALLOWEST event-looking ancestor wins, so "Wedding/Reception/..." keeps Reception
+  as structure under the Wedding event rather than becoming its own event.
+
+Everything else carries over from the fable version: median-anchored event dates with the
+--event-span-days window (strays are filed by their own year/month), duplicate/corrupt
+quarantine, _not-media/, _needs-review/, _phone-misc/ junk quarantine, .phone tagging,
+per-file copy errors logged FAILED + resume, incremental skip via library.md5, collision-safe
+naming, one output line per file with a reason for anything not placed in the timeline.
 
 USAGE
-  python media_organizer-fable.py run     --source "SRC" --dest "DST"   # ONE STEP: plan + copy + verify
-  python media_organizer-fable.py plan    --source "SRC" --dest "DST"   # dry run only
-  python media_organizer-fable.py execute --dest "DST"                  # copy per plan + verify
-  python media_organizer-fable.py resume  --dest "DST"                  # finish an interrupted copy
-  python media_organizer-fable.py status  --dest "DST"                  # list runs
-  python media_organizer-fable.py verify  --source "SRC" --dest "DST"   # content diff
+  python media_organizer-v3.py run     --source "SRC" --dest "DST"   # ONE STEP: plan + copy + verify
+  python media_organizer-v3.py plan    --source "SRC" --dest "DST"   # dry run only
+  python media_organizer-v3.py execute --dest "DST"                  # copy per plan + verify
+  python media_organizer-v3.py resume  --dest "DST"                  # finish an interrupted copy
+  python media_organizer-v3.py status  --dest "DST"                  # list runs
+  python media_organizer-v3.py verify  --source "SRC" --dest "DST"   # content diff
 
-ROUTING (priority order, per source file) -- unchanged from v5
+ROUTING (priority order, per source file)
   1. media & (zero-byte/unreadable)   -> untouched/<parent>/corrupt/<name>
   2. media & duplicate of a kept file -> untouched/<parent>/duplicate/<name>
-  3. nested >1 folder deep in source  -> untouched/<same source path>
-  4. not media (<=1 folder deep)      -> _not-media/<path>
-  5. media, <=1 deep, has a date      -> YYYY/MM - Month/[event/]YYYY-MM-DD-slug.ext
-  6. media, <=1 deep, no date         -> _needs-review/<path>
+  3. not media (any depth)            -> _not-media/<original path>
+  4. media, has a date:
+       junk (screenshot/messaging)    -> _phone-misc/YYYY/MM - Month/<dated name>
+       event ancestor on source path  -> YYYY/MM - Month/<event>/<structure below event>/<dated name>
+       otherwise                      -> YYYY/MM - Month/<dated name>
+  5. media, no date                   -> _needs-review/<original path>  (junk: _phone-misc/<path>)
   Every file is copied somewhere; nothing is skipped, nothing is deleted, bytes never altered.
 
 DEPENDENCIES: Python 3.8+, Pillow (image EXIF), pillow-heif (optional, HEIC dates),
@@ -77,6 +73,50 @@ GENERIC = {"new folder","camera roll","dcim","export","misc","photos","images","
            "original size","social media","zip","video","videos"}
 GENERIC_RE = re.compile(r"^\d{2,3}[a-z]{4,}$")
 CAMPREFIX = ["dscf","dscn","dscm","dsc","dcp","img","pxl","vid","mvi","gopr","pict","picture","image","photo","map","p"]
+
+# Words that never make a folder name an EVENT on their own: containers, pipeline stages,
+# camera/phone dumps, and generic time words. "madrid marathon" is an event; "00_exports",
+# "day2", "raw", "Trips", "Camera Roll" are not.
+EVENT_STOP = {w for g in GENERIC for w in g.split()} | set(CAMPREFIX) | {
+    "export","exports","raw","jpeg","jpegs","jpg","edit","edits","edited","original","originals",
+    "copy","copies","backup","backups","old","final","finals","select","selects","selection",
+    "favorite","favorites","favourite","favourites","best","keepers","sorted","unsorted","sort",
+    "screenshot","screenshots","thumb","thumbs","thumbnail","thumbnails","cache","temp","tmp",
+    "other","others","stuff","various","varios","all","full","complete","rest","resto",
+    "day","days","week","weeks","month","months","year","years","part","parts","disc","disk",
+    "cd","dvd","roll","rolls","folder","folders","untitled","scan","scans","scanned",
+    "phone","mobile","iphone","android","camera","cam","gopro","drone",
+    "upload","uploads","download","downloads","import","imports","imported","takeout",
+    "trip","trips","travel","travels","vacation","vacations","holiday","holidays",
+    "event","events","album","albums","gallery","galleries","foto","fotos","imagen","imagenes",
+    "media","files","documents","archive","archives","archivo","archivos","attachments",
+    "whatsapp","telegram","signal","instagram","facebook","messenger","snapchat","wechat","viber",
+    "the","and","for","with","from","this","these","those","that","etc","los","las","para","con",
+}
+
+def is_event_name(name):
+    """Does this folder name look like a real event ('madrid marathon', 'Karen Hawaii')?
+    Numbers, dates, camera dumps ('100CANON') and container/junk names ('00_exports',
+    'day2', 'RAW', 'Trips') do not count."""
+    n=name.strip().lower()
+    if not n or n in GENERIC or GENERIC_RE.match(n): return False
+    # transliterate accents so 'cumpleaños' contributes the word 'cumpleanos'
+    n=unicodedata.normalize("NFKD",n).encode("ascii","ignore").decode("ascii")
+    n=re.sub(r"^[\d\-_ .#()\[\]]+","",n)     # strip leading numbering/date: "00_exports", "2019-06 madrid"
+    n=re.sub(r"[\d\-_ .#()\[\]]+$","",n)     # strip trailing numbering/date: "madrid 2019"
+    words=[w for w in re.findall(r"[a-z]+",n) if len(w)>=3]
+    return any(w not in EVENT_STOP for w in words)
+
+def event_ancestor(folder):
+    """-> (event_path, subpath) for the SHALLOWEST event-looking folder on the file's source
+    path, or (None, ""). subpath is the structure between the event folder and the file,
+    preserved verbatim under the event folder in the destination."""
+    if folder in (".",""): return None,""
+    parts=norm(folder).split("/")
+    for i,p in enumerate(parts):
+        if is_event_name(p):
+            return "/".join(parts[:i+1]), "/".join(parts[i+1:])
+    return None,""
 
 MIN_YEAR   = 1995     # overridable with --min-year
 EVENT_SPAN = 31       # days; overridable with --event-span-days
@@ -186,8 +226,6 @@ def track(seq, phase, folder_of, log_folders=False, quiet=False):
 
 
 def norm(p): return p.replace("\\","/")
-def depth(rel): return norm(rel).strip("/").count("/")          # 0 = root file, 1 = one folder deep
-def single_level(folder): return folder not in (".","") and "/" not in norm(folder)
 
 def check_overlap(SRC, DST):
     """Refuse to run when one tree contains the other (v5 would scan/copy into itself)."""
@@ -283,12 +321,6 @@ def sidecar_date(full):
         except Exception: pass
 def trailing_seq(base):
     m=re.search(r"(\d{2,})$",base); return int(m.group(1)) if m else None
-def is_event_folder(folder):
-    if not single_level(folder): return False
-    n=os.path.basename(norm(folder)).lower().strip()
-    if n in GENERIC or GENERIC_RE.match(n): return False
-    if re.fullmatch(r"[\d\-_ .]+",n): return False
-    return True
 
 def build_records(SRC):
     recs=[]
@@ -300,13 +332,13 @@ def build_records(SRC):
             try: size=os.path.getsize(full); mt=datetime.datetime.fromtimestamp(os.path.getmtime(full))
             except OSError: size=0; mt=datetime.datetime.now()
             recs.append(dict(full=full, rel=rel, fname=f, ext=ext, base=base, folder=os.path.dirname(rel) or ".",
-                             size=size, mtime=mt, is_media=ext in MEDIA_EXT, nested=depth(rel)>=2,
+                             size=size, mtime=mt, is_media=ext in MEDIA_EXT,
                              phone=False, junk=is_junk(f),
                              date=None, date_source="", date_conf="", tier=0, note="", dest="", md5=""))
     return recs
 
 def date_local(r):
-    if not r["is_media"] or r["nested"]: return
+    if not r["is_media"]: return
     if r["size"]==0:
         r.update(note="zero-byte / corrupt", tier=7, date_source="none", date_conf="none"); return
     ed,emm=exif_info(r["full"],r["ext"])
@@ -325,7 +357,7 @@ def assign_dates_global(recs):
     bulk={fo:{mt for mt,c in mm.items() if c>=20} for fo,mm in fmt.items()}
     byfolder=defaultdict(list)
     for r in recs:
-        if r["is_media"] and not r["nested"]: byfolder[r["folder"]].append(r)
+        if r["is_media"]: byfolder[r["folder"]].append(r)
     for folder,group in byfolder.items():
         dated=[(trailing_seq(r["base"]),r["date"]) for r in group if r["date"] and r["tier"] in (1,2,3) and trailing_seq(r["base"]) is not None]
         if not dated: continue
@@ -340,7 +372,7 @@ def assign_dates_global(recs):
                      date_conf=("low" if len({c for c in cand})>1 else "medium"),
                      note="inferred from adjacent sequence numbers")
     for r in recs:
-        if not r["is_media"] or r["nested"] or r["date"] or r["size"]==0: continue
+        if not r["is_media"] or r["date"] or r["size"]==0: continue
         mtm=r["mtime"].replace(second=0,microsecond=0)
         art = mtm in bulk.get(r["folder"],set()) or not plausible(r["mtime"].year,r["mtime"].month,r["mtime"].day)
         if not art:
@@ -359,28 +391,32 @@ def compute_hashes(recs):
         except OSError: r["md5"]=""
 
 def assign_destinations(recs):
-    placeable=[r for r in recs if r["is_media"] and not r["nested"] and r["size"]>0]
+    placeable=[r for r in recs if r["is_media"] and r["size"]>0]
     seen={}; dupe_of={}
     for r in sorted(placeable,key=lambda x:x["rel"]):
         if r["md5"]:
             if r["md5"] in seen: dupe_of[r["rel"]]=seen[r["md5"]]
             else: seen[r["md5"]]=r["rel"]
-    # Event anchoring: v5 used min(all dates), so one mis-dated file dragged a whole event
-    # into the wrong year. Now: anchor on the MEDIAN date, name the event after the earliest
-    # date within EVENT_SPAN of it, and only files within EVENT_SPAN join the event.
+    # Events: the shallowest event-looking ancestor claims every media file below it, at any
+    # depth; the structure between the event folder and the file is preserved (event_sub).
+    # Event anchoring: MEDIAN date, named after the earliest date within EVENT_SPAN of it,
+    # and only files within EVENT_SPAN join the event (strays go to their own year/month).
+    byevent=defaultdict(list)
+    for r in placeable:
+        ek,sub=event_ancestor(r["folder"]); r["event_key"]=ek; r["event_sub"]=sub
+        if ek: byevent[ek].append(r)
     event_dates={}; event_anchor={}
-    for folder in {r["folder"] for r in placeable}:
-        if is_event_folder(folder):
-            # junk (screenshots/WhatsApp) must not anchor an event's date
-            ds=sorted(r["date"] for r in placeable if r["folder"]==folder and r["date"] and not dupe_of.get(r["rel"]) and not r["junk"])
-            if not ds: continue
-            med=ds[len(ds)//2]
-            cluster=[x for x in ds if abs((x-med).days)<=EVENT_SPAN]
-            event_dates[folder]=min(cluster); event_anchor[folder]=med
+    for ek,group in byevent.items():
+        # junk (screenshots/WhatsApp) and duplicates must not anchor an event's date
+        ds=sorted(r["date"] for r in group if r["date"] and not dupe_of.get(r["rel"]) and not r["junk"])
+        if not ds: continue
+        med=ds[len(ds)//2]
+        cluster=[x for x in ds if abs((x-med).days)<=EVENT_SPAN]
+        event_dates[ek]=min(cluster); event_anchor[ek]=med
     daycount=defaultdict(int); used=defaultdict(int)
     for r in sorted(recs,key=lambda x:x["rel"]):
         rel=norm(r["rel"]); name=os.path.basename(rel); parent=os.path.dirname(rel)
-        corrupt = r["is_media"] and (r["size"]==0 or (not r["nested"] and r["md5"]==""))
+        corrupt = r["is_media"] and (r["size"]==0 or r["md5"]=="")
         dup = r["rel"] in dupe_of
         if corrupt or dup:
             sub=(parent+"/" if parent else "")
@@ -389,29 +425,29 @@ def assign_destinations(recs):
             r["route"]=bucket
             r["note"]=(r["note"]+"; " if r["note"] else "")+(f"duplicate of {dupe_of[r['rel']]}" if dup else "corrupt/zero-byte")
             continue
-        if r["nested"]:
-            r["dest"]=f"untouched/{rel}"; r["route"]="nested"; continue
         if not r["is_media"]:
             r["dest"]=f"_not-media/{rel}"; r["route"]="not-media"; continue
         if not r["date"]:
             if QUAR_JUNK and r["junk"]:
                 r["dest"]=f"_phone-misc/{rel}"; r["route"]="phone-misc"; continue
             r["dest"]=f"_needs-review/{rel}"; r["route"]="needs-review"; continue
-        d=r["date"]; ev=event_dates.get(r["folder"]); med=event_anchor.get(r["folder"])
+        d=r["date"]; ek=r.get("event_key")
+        ev=event_dates.get(ek) if ek else None; med=event_anchor.get(ek) if ek else None
         route="placed"
         if QUAR_JUNK and r["junk"]:
             # screenshots / messaging saves: dated + renamed, but quarantined out of the timeline
             destdir=f"_phone-misc/{d.year}/{d.month:02d} - {MONTHS[d.month]}"; r["event_name"]=""
             route="phone-misc"
         elif ev is not None and abs((d-med).days)<=EVENT_SPAN:
-            fslug=slugify(os.path.basename(r['folder'])) or "event"
+            fslug=slugify(os.path.basename(ek)) or "event"
             evname=f"{ev.year}-{ev.month:02d}-{ev.day:02d}-{fslug}"
             destdir=f"{ev.year}/{ev.month:02d} - {MONTHS[ev.month]}/{evname}"
+            if r.get("event_sub"): destdir+=f"/{r['event_sub']}"   # keep structure below the event folder
             r["event_name"]=evname
         else:
             destdir=f"{d.year}/{d.month:02d} - {MONTHS[d.month]}"; r["event_name"]=""
             if ev is not None:
-                r["note"]=(r["note"]+"; " if r["note"] else "")+f"outside event window of {r['folder']}"
+                r["note"]=(r["note"]+"; " if r["note"] else "")+f"outside event window of {ek}"
         slug=make_slug(r["base"])
         if slug is None:
             daycount[(destdir,d)]+=1
@@ -474,7 +510,7 @@ def write_run_outputs(SRC,DST,recs,event_dates,dupe_of):
                         r["date_source"],r["date_conf"],r["tier"],r.get("event_name",""),r["md5"],r["note"],
                         "phone" if r.get("phone") else ""])
     def cnt(route): return len([r for r in recs if r.get("route")==route])
-    placed=cnt("placed"); nested=cnt("nested"); cod=cnt("corrupt")+cnt("duplicate")
+    placed=cnt("placed"); cod=cnt("corrupt")+cnt("duplicate")
     notmedia=cnt("not-media"); needs=cnt("needs-review"); pmisc=cnt("phone-misc")
     phones=len([r for r in recs if r.get("route")=="placed" and r.get("phone")])
     by_tier=defaultdict(int)
@@ -485,7 +521,7 @@ def write_run_outputs(SRC,DST,recs,event_dates,dupe_of):
         if r.get("route")=="placed": ym["/".join(r["dest"].split("/")[:2])]+=1
     state=dict(run_id=run_id,source=SRC,destination=DST,phase="awaiting-approval",
                plan_path=f"_organizer/runs/{run_id}/plan.csv",started_at=started,finished_at=None,
-               totals=dict(total_files=len(recs),placed=placed,untouched=nested,corrupt_or_duplicate=cod,
+               totals=dict(total_files=len(recs),placed=placed,untouched=cod,corrupt_or_duplicate=cod,
                            not_media=notmedia,needs_review=needs,phone_misc=pmisc,phone_tagged=phones,events=len(event_dates)),
                events={f:d.isoformat() for f,d in event_dates.items()})
     with open(os.path.join(rundir,"state.json"),"w",encoding="utf-8") as fh:
@@ -494,14 +530,14 @@ def write_run_outputs(SRC,DST,recs,event_dates,dupe_of):
     sm=[f"# Media Organizer run {run_id}\n",f"- Started: {started}",f"- Source: `{SRC}`",f"- Destination: `{DST}`",
         f"- Phase: **awaiting-approval**\n","## Disposition (every file is copied somewhere)",
         f"- Total files: {len(recs)}",f"- Placed into year/month: {placed}",
-        f"- Untouched (nested >1 deep): {nested}",f"- Corrupt: {cnt('corrupt')}   Duplicate: {cnt('duplicate')}",
+        f"- Corrupt: {cnt('corrupt')}   Duplicate: {cnt('duplicate')}   (both under untouched/)",
         f"- Not-media: {notmedia}",f"- Needs-review: {needs}",
         f"- Phone junk quarantined to _phone-misc: {pmisc}",
         f"- Phone-tagged (.phone token) in timeline: {phones}\n","## Date-source tiers (placed)"]
     for t in range(1,8): sm.append(f"- tier {t} {lab[t]}: {by_tier[t]}")
-    sm.append("\n## Events (single-level folders): %d"%len(event_dates))
+    sm.append("\n## Events (event-named source folders, any depth): %d"%len(event_dates))
     for f,d in sorted(event_dates.items()):
-        n=len([r for r in recs if r["folder"]==f and r.get("route")=="placed"])
+        n=len([r for r in recs if r.get("event_key")==f and r.get("route")=="placed"])
         sm.append(f"- {d.isoformat()}  `{f}`  ({n})")
     sm.append("\n## Placed per year/month")
     for k in sorted(ym): sm.append(f"- {k}: {ym[k]}")
@@ -510,12 +546,12 @@ def write_run_outputs(SRC,DST,recs,event_dates,dupe_of):
     open(os.path.join(rundir,"copied.log"),"a",encoding="utf-8").close()
     rows=read_ledger(org)
     rows.append(dict(run_id=run_id,started_at=started,finished_at="",source=SRC,destination=DST,
-                     phase="awaiting-approval",total_files=len(recs),placed=placed,untouched=nested,
+                     phase="awaiting-approval",total_files=len(recs),placed=placed,untouched=cod,
                      corrupt_or_duplicate=cod,not_media=notmedia,needs_review=needs,events=len(event_dates),
                      copied_count=0,notes="dry-run complete"))
     write_ledger(org,rows)
     print(f"\nRUN {run_id}  --  phase: awaiting-approval")
-    print(f"  total={len(recs)} placed={placed} untouched={nested} corrupt/dup={cod} not-media={notmedia} needs-review={needs} phone-misc={pmisc} phone-tagged={phones}")
+    print(f"  total={len(recs)} placed={placed} corrupt/dup={cod} not-media={notmedia} needs-review={needs} phone-misc={pmisc} phone-tagged={phones}")
     print("  placed tiers:",dict(by_tier)," events:",len(event_dates))
     print(f"\nReview: {os.path.join(rundir,'summary.md')}\n        {os.path.join(rundir,'plan.csv')}")
     print(f"Then run:  python {os.path.basename(__file__)} execute --dest \"{DST}\"")
@@ -535,7 +571,6 @@ def _route_reason(row):
     """Short human-readable reason (from plan.csv route/notes) for any file that is NOT
     placed into the year/month timeline -- shown on that file's copy line."""
     route=(row.get("route") or "").strip(); notes=(row.get("notes") or "").strip()
-    if route=="nested":       return "untouched: nested >1 folder deep in source"
     if route=="corrupt":      return "untouched: corrupt/zero-byte"
     if route=="duplicate":
         m=re.search(r"duplicate of .+",notes)
@@ -728,7 +763,7 @@ def cmd_verify(args):
 
 
 def main():
-    ap=argparse.ArgumentParser(description="Deterministic media organizer (photos/video/audio). v6 'fable'")
+    ap=argparse.ArgumentParser(description="Deterministic media organizer (photos/video/audio). v3: full year/month tree, deep event folders")
     sub=ap.add_subparsers(dest="cmd",required=True)
     def add_plan_opts(sp):
         sp.add_argument("--source",required=True); sp.add_argument("--dest",required=True)
