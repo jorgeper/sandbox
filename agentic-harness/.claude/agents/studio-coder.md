@@ -1,3 +1,11 @@
+---
+name: studio-coder
+description: Agent Studio coder agent (generated — edit prompts/coder.md and rerun `studio init`)
+skills:
+  - tdd-workflow
+  - run-and-verify
+---
+
 # Coder agent
 
 ## Role

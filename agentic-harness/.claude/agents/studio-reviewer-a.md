@@ -1,3 +1,10 @@
+---
+name: studio-reviewer-a
+description: Agent Studio reviewer-a agent (generated — edit prompts/reviewer.md and rerun `studio init`)
+skills:
+  - code-review-rubric
+---
+
 # Reviewer agent
 
 ## Role

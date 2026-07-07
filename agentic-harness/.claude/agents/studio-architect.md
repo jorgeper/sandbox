@@ -1,3 +1,11 @@
+---
+name: studio-architect
+description: Agent Studio architect agent (generated — edit prompts/architect.md and rerun `studio init`)
+skills:
+  - spec-writing
+  - acceptance-criteria
+---
+
 # Architect agent
 
 ## Role

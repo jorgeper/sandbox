@@ -1,3 +1,10 @@
+---
+name: studio-prd
+description: Agent Studio prd agent (generated — edit prompts/prd.md and rerun `studio init`)
+skills:
+  - spec-writing
+---
+
 # PRD agent
 
 ## Role
